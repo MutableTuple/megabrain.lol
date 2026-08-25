@@ -2,8 +2,8 @@ import Game from "./game";
 import HomeLink from "../components/HomeLink";
 
 export const metadata = {
-  title: "Math Duel",
-  description: "Race a real opponent — first to ten wins.",
+  title: "Perfect Shape",
+  description: "Draw a circle, square, or rectangle. See how close to perfect you got.",
 };
 
 export default function Page() {

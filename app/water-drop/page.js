@@ -2,8 +2,8 @@ import Game from "./game";
 import HomeLink from "../components/HomeLink";
 
 export const metadata = {
-  title: "Math Duel",
-  description: "Race a real opponent — first to ten wins.",
+  title: "Water Drop",
+  description: "Fill the glass without spilling. Solo or against bots.",
 };
 
 export default function Page() {

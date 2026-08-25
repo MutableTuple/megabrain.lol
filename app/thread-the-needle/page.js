@@ -1,4 +1,5 @@
 import Game from "./game";
+import HomeLink from "../components/HomeLink";
 
 export const metadata = {
   title: "Thread the Needle",
@@ -6,5 +7,10 @@ export const metadata = {
 };
 
 export default function Page() {
-  return <Game />;
+  return (
+    <>
+      <HomeLink />
+      <Game />
+    </>
+  );
 }

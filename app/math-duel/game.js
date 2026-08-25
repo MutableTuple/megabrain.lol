@@ -1,6 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Peer from "peerjs";
+import { initAudio, isMuted, setMuted, playCorrect, playWrong, playTick, playGo, playKey, playWin, playLose } from "../lib/sound";
+
+function makeRoomId() {
+  const chars = "abcdefghijkmnpqrstuvwxyz23456789";
+  let s = "";
+  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+function hostPeerId(rid) { return `mb-md-${rid}`; }
 
 const TARGET = 10;
 
@@ -104,6 +114,26 @@ export default function Game() {
   const [elapsed, setElapsed] = useState(0);
   const [wrongFlash, setWrongFlash] = useState(false);
   const [matchingLabel, setMatchingLabel] = useState("finding opponent");
+  const [muted, setMutedState] = useState(false);
+  useEffect(() => { setMutedState(isMuted()); }, []);
+  const toggleMute = useCallback(() => {
+    initAudio();
+    const next = !isMuted();
+    setMuted(next);
+    setMutedState(next);
+  }, []);
+
+  // networking
+  const [netMode, setNetMode] = useState("local"); // local | host | guest
+  const [roomId, setRoomId] = useState(null);
+  const [netStatus, setNetStatus] = useState("idle"); // idle | opening | ready | error
+  const [netError, setNetError] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [oppName, setOppName] = useState("");
+  const netModeRef = useRef("local");
+  const peerRef = useRef(null);
+  const connRef = useRef(null);
+  useEffect(() => { netModeRef.current = netMode; }, [netMode]);
 
   const botRef = useRef({ timers: [], personality: null, alive: false });
   const startedAtRef = useRef(0);
@@ -124,6 +154,29 @@ export default function Game() {
     botRef.current.timers = [];
   }, []);
 
+  const send = useCallback((msg) => {
+    const c = connRef.current;
+    if (c && c.open) { try { c.send(msg); } catch {} }
+  }, []);
+
+  const leaveNet = useCallback(() => {
+    if (peerRef.current) { try { peerRef.current.destroy(); } catch {}; peerRef.current = null; }
+    connRef.current = null;
+    setNetMode("local");
+    netModeRef.current = "local";
+    setRoomId(null);
+    setNetStatus("idle");
+    setNetError(null);
+    setOppName("");
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("room");
+      window.history.replaceState({}, "", url.pathname);
+    }
+    setPhase("lobby");
+    setUserIdx(0); setBotIdx(0); setUserInput(""); setWinner(null);
+  }, []);
+
   const finishMatch = useCallback((who) => {
     if (phaseRef.current === "ended") return;
     clearBot();
@@ -133,7 +186,125 @@ export default function Game() {
     }
     setWinner(who);
     setPhase("ended");
+    if (who === "user") playWin(); else playLose();
   }, [clearBot]);
+
+  const handleMessage = useCallback((data) => {
+    if (!data || typeof data !== "object") return;
+    const mode = netModeRef.current;
+    if (mode === "host") {
+      if (data.t === "hello") {
+        const name = randomName();
+        setOppName(name);
+        send({ t: "lob", oppName: "friend", myName: name });
+      } else if (data.t === "p") {
+        setBotIdx(data.i);
+      } else if (data.t === "w") {
+        finishMatch("bot");
+      }
+    } else if (mode === "guest") {
+      if (data.t === "lob") {
+        setOppName(data.oppName || "friend");
+      } else if (data.t === "q") {
+        setQuestions(data.questions);
+        setUserIdx(0);
+        setBotIdx(0);
+        setUserInput("");
+        setWinner(null);
+        setBotStatus("waiting");
+        setPhase("countdown");
+        setCountdown(3);
+      } else if (data.t === "p") {
+        setBotIdx(data.i);
+      } else if (data.t === "w") {
+        finishMatch("bot");
+      }
+    }
+  }, [send, finishMatch]);
+
+  const startHosting = useCallback(() => {
+    if (peerRef.current) return;
+    initAudio();
+    const rid = makeRoomId();
+    setRoomId(rid);
+    setNetMode("host");
+    netModeRef.current = "host";
+    setNetStatus("opening");
+    setNetError(null);
+    const peer = new Peer(hostPeerId(rid), { debug: 1 });
+    peer.on("open", () => {
+      setNetStatus("ready");
+      if (typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        url.searchParams.set("room", rid);
+        window.history.replaceState({}, "", url.toString());
+      }
+    });
+    peer.on("connection", (conn) => {
+      conn.on("open", () => { connRef.current = conn; });
+      conn.on("data", (data) => handleMessage(data));
+      conn.on("close", () => {
+        setNetError("opponent left");
+        setNetStatus("error");
+        connRef.current = null;
+        setOppName("");
+      });
+    });
+    peer.on("error", (err) => {
+      setNetError(String(err?.type || err?.message || err));
+      setNetStatus("error");
+    });
+    peerRef.current = peer;
+  }, [handleMessage]);
+
+  const joinRoom = useCallback((rid) => {
+    if (peerRef.current) return;
+    setRoomId(rid);
+    setNetMode("guest");
+    netModeRef.current = "guest";
+    setNetStatus("opening");
+    setNetError(null);
+    const peer = new Peer(undefined, { debug: 1 });
+    peer.on("open", () => {
+      const conn = peer.connect(hostPeerId(rid), { reliable: true });
+      conn.on("open", () => {
+        setNetStatus("ready");
+        connRef.current = conn;
+        conn.send({ t: "hello", name: null });
+      });
+      conn.on("data", handleMessage);
+      conn.on("close", () => {
+        setNetError("host left");
+        setNetStatus("error");
+      });
+    });
+    peer.on("error", (err) => {
+      setNetError(String(err?.type || err?.message || err));
+      setNetStatus("error");
+    });
+    peerRef.current = peer;
+  }, [handleMessage]);
+
+  // auto-join from URL
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const r = params.get("room");
+    if (r && !peerRef.current) joinRoom(r);
+    // eslint-disable-next-line
+  }, []);
+
+  // broadcast my progress when it changes (network modes only)
+  useEffect(() => {
+    if (netMode === "local") return;
+    send({ t: "p", i: userIdx });
+    if (userIdx >= TARGET) send({ t: "w" });
+  }, [userIdx, netMode, send]);
+
+  // cleanup peer on unmount
+  useEffect(() => () => {
+    if (peerRef.current) { try { peerRef.current.destroy(); } catch {}; peerRef.current = null; }
+  }, []);
 
   // bot loop
   const botStep = useCallback(() => {
@@ -214,9 +385,11 @@ export default function Game() {
   useEffect(() => {
     if (phase !== "countdown") return;
     if (countdown <= 0) {
+      playGo();
       setPhase("playing");
       return;
     }
+    playTick();
     const t = setTimeout(() => setCountdown((c) => c - 1), 800);
     return () => clearTimeout(t);
   }, [phase, countdown]);
@@ -229,10 +402,12 @@ export default function Game() {
     timerRef.current = setInterval(() => {
       setElapsed(performance.now() - startedAtRef.current);
     }, 100);
-    // launch bot
-    botRef.current.personality = pickPersonality();
-    botRef.current.alive = true;
-    botRef.current.timers.push(setTimeout(botStep, 500 + Math.random() * 400));
+    // launch bot only for local (bot) mode
+    if (netModeRef.current === "local") {
+      botRef.current.personality = pickPersonality();
+      botRef.current.alive = true;
+      botRef.current.timers.push(setTimeout(botStep, 500 + Math.random() * 400));
+    }
     return () => {
       clearBot();
       if (timerRef.current) clearInterval(timerRef.current);
@@ -252,11 +427,14 @@ export default function Game() {
       setUserInput("");
       if (nextIdx >= TARGET) {
         finishMatch("user");
+      } else {
+        playCorrect();
       }
     }
   }, [userInput, userIdx, questions, phase, finishMatch]);
 
   const startMatch = useCallback(() => {
+    initAudio();
     clearBot();
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     setQuestions(buildQuestions());
@@ -270,8 +448,26 @@ export default function Game() {
     setPhase("matching");
   }, [clearBot]);
 
+  const startFriendMatch = useCallback(() => {
+    initAudio();
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    const qs = buildQuestions();
+    setQuestions(qs);
+    setUserIdx(0);
+    setBotIdx(0);
+    setUserInput("");
+    setBotTyped("");
+    setBotStatus("waiting");
+    setWinner(null);
+    setElapsed(0);
+    setPhase("countdown");
+    setCountdown(3);
+    send({ t: "q", questions: qs });
+  }, [send]);
+
   const pressDigit = useCallback((d) => {
     if (phaseRef.current !== "playing") return;
+    playKey();
     setUserInput((v) => {
       const next = (v + d).slice(0, 6);
       return d === "-" ? (v.startsWith("-") ? v.slice(1) : "-" + v) : next;
@@ -280,11 +476,13 @@ export default function Game() {
 
   const pressBack = useCallback(() => {
     if (phaseRef.current !== "playing") return;
+    playKey();
     setUserInput((v) => v.slice(0, -1));
   }, []);
 
   const pressClear = useCallback(() => {
     if (phaseRef.current !== "playing") return;
+    playKey();
     setUserInput("");
   }, []);
 
@@ -298,6 +496,7 @@ export default function Game() {
       else if (e.key === "Enter" || e.key === "Escape") {
         const q = questionsRef.current[userIdxRef.current];
         if (q && Number(userInput) !== q.answer) {
+          playWrong();
           setWrongFlash(true);
           setTimeout(() => setWrongFlash(false), 250);
           setUserInput("");
@@ -323,6 +522,16 @@ export default function Game() {
             : "#0a0a12",
       }}
     >
+      {/* Mute toggle */}
+      <button
+        type="button"
+        onClick={toggleMute}
+        className="fixed top-2 right-2 sm:top-3 sm:right-3 z-30 text-white/50 hover:text-white text-xs font-mono tracking-widest px-2 py-1 rounded-full bg-black/30 hover:bg-black/50 backdrop-blur-sm transition cursor-pointer touch-manipulation"
+        aria-label={muted ? "unmute" : "mute"}
+      >
+        {muted ? "🔇" : "🔊"}
+      </button>
+
       {/* Split panels */}
       {(phase === "playing" || phase === "ended") && (
         <div className="grid grid-cols-2 h-full pb-64 sm:pb-32">
@@ -350,13 +559,15 @@ export default function Game() {
           <Panel
             side="right"
             accent="#c77dff"
-            name={botName || "opponent"}
+            name={netMode === "local" ? (botName || "opponent") : (oppName || "friend")}
             score={botIdx}
             active={phase === "playing"}
             question={botQ}
           >
             <div className="w-full h-[1.2em] text-3xl sm:text-6xl text-center tabular-nums text-white/90">
-              {botStatus === "thinking" ? (
+              {netMode !== "local" ? (
+                <span className="text-white/40 text-lg sm:text-3xl italic">solving<span className="animate-pulse">…</span></span>
+              ) : botStatus === "thinking" ? (
                 <span className="text-white/40 text-lg sm:text-3xl italic">thinking…</span>
               ) : botTyped ? (
                 <span>{botTyped}<span className="text-white/40 animate-pulse">|</span></span>
@@ -392,19 +603,112 @@ export default function Game() {
 
       {/* LOBBY */}
       {phase === "lobby" && (
-        <div className="fixed inset-0 flex flex-col items-center justify-center px-6 text-center z-20">
-          <div className="text-white/40 uppercase tracking-[0.3em] text-xs mb-4">math duel</div>
-          <h1 className="text-5xl sm:text-6xl font-semibold tracking-tight mb-3">first to 10.</h1>
-          <p className="text-white/60 max-w-sm mb-10">
-            ten questions, one opponent. type the answer — no enter needed.
-          </p>
-          <button
-            type="button"
-            onClick={startMatch}
-            className="px-8 py-4 rounded-full bg-white text-black text-lg font-medium tracking-tight hover:bg-white/90 active:scale-95 transition cursor-pointer touch-manipulation select-none"
-          >
-            find match
-          </button>
+        <div className="fixed inset-0 flex flex-col items-center justify-center px-6 text-center z-20 gap-6 overflow-y-auto py-8">
+          <div>
+            <div className="text-white/40 uppercase tracking-[0.3em] text-xs mb-4">math duel</div>
+            <h1 className="text-4xl sm:text-6xl font-semibold tracking-tight mb-3">first to 10.</h1>
+            <p className="text-white/60 max-w-sm mx-auto text-sm sm:text-base">
+              ten questions, one opponent. type the answer — no enter needed.
+            </p>
+          </div>
+
+          {netMode === "local" && (
+            <div className="flex flex-col items-center gap-3">
+              <button
+                type="button"
+                onClick={startMatch}
+                className="px-8 py-4 rounded-full bg-white text-black text-lg font-medium tracking-tight hover:bg-white/90 active:scale-95 transition cursor-pointer touch-manipulation select-none"
+              >
+                find match (vs bot)
+              </button>
+              <button
+                type="button"
+                onClick={startHosting}
+                className="text-white/60 hover:text-white text-sm underline underline-offset-4 cursor-pointer touch-manipulation"
+              >
+                play with a friend →
+              </button>
+            </div>
+          )}
+
+          {netMode === "host" && (
+            <div className="flex flex-col items-center gap-4 w-full max-w-sm">
+              {netStatus === "opening" && <div className="text-white/60 text-sm">creating room…</div>}
+              {netStatus === "error" && <div className="text-red-400 text-sm">{netError || "connection failed"}</div>}
+              {netStatus === "ready" && (
+                <>
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="text-white/50 text-[10px] uppercase tracking-widest">room code</div>
+                    <div className="text-3xl font-mono font-semibold tracking-widest">{roomId}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const url = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
+                      try {
+                        await navigator.clipboard.writeText(url);
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 1400);
+                      } catch {}
+                    }}
+                    className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-sm cursor-pointer touch-manipulation"
+                  >
+                    {copied ? "copied ✓" : "copy invite link"}
+                  </button>
+                  <div className="text-white/30 text-xs break-all">
+                    {typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}?room=${roomId}` : ""}
+                  </div>
+
+                  <div className="text-white/60 text-sm mt-4">
+                    {oppName ? (
+                      <span className="text-[#c77dff]">{oppName} joined</span>
+                    ) : (
+                      <span className="text-white/40">waiting for opponent…</span>
+                    )}
+                  </div>
+
+                  <div className="flex gap-2 mt-2">
+                    <button
+                      type="button"
+                      disabled={!oppName}
+                      onClick={startFriendMatch}
+                      className="px-6 py-3 rounded-full bg-white text-black font-medium tracking-tight disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white/90 active:scale-95 transition cursor-pointer touch-manipulation"
+                    >
+                      start game
+                    </button>
+                    <button
+                      type="button"
+                      onClick={leaveNet}
+                      className="px-4 py-3 rounded-full text-white/60 hover:text-white text-sm cursor-pointer touch-manipulation"
+                    >
+                      cancel
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {netMode === "guest" && (
+            <div className="flex flex-col items-center gap-4 w-full max-w-sm">
+              {netStatus === "opening" && <div className="text-white/60 text-sm">joining room {roomId}…</div>}
+              {netStatus === "error" && <div className="text-red-400 text-sm">{netError || "couldn't connect"}</div>}
+              {netStatus === "ready" && (
+                <>
+                  <div className="text-white/50 text-[10px] uppercase tracking-widest">room</div>
+                  <div className="text-2xl font-mono font-semibold tracking-widest">{roomId}</div>
+                  <div className="text-white/50 text-sm">waiting for host to start…</div>
+                  <button
+                    type="button"
+                    onClick={leaveNet}
+                    className="mt-2 text-white/40 hover:text-white/70 text-xs cursor-pointer touch-manipulation"
+                  >
+                    leave
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -425,7 +729,7 @@ export default function Game() {
           <div className="text-white/50 text-sm mb-6 tracking-widest uppercase">
             <span className="text-[#4cc9f0]">you</span>
             <span className="mx-3 text-white/30">vs</span>
-            <span className="text-[#c77dff]">{botName}</span>
+            <span className="text-[#c77dff]">{netMode === "local" ? botName : (oppName || "friend")}</span>
           </div>
           <div className="text-9xl font-semibold tabular-nums">
             {countdown === 0 ? "go" : countdown}
@@ -439,24 +743,36 @@ export default function Game() {
           <div className="bg-white/5 border border-white/10 rounded-2xl p-8 sm:p-10 max-w-sm w-[92%] text-center shadow-2xl">
             <div className="text-4xl sm:text-5xl mb-1">{winner === "user" ? "🏆" : "🫠"}</div>
             <div className="text-2xl font-semibold tracking-tight mb-1">
-              {winner === "user" ? "you won" : `${botName} won`}
+              {winner === "user" ? "you won" : `${netMode === "local" ? botName : (oppName || "friend")} won`}
             </div>
             <div className="text-white/50 text-sm mb-6">
-              {(elapsed / 1000).toFixed(1)}s · you {userIdx}/{TARGET} · {botName} {botIdx}/{TARGET}
+              {(elapsed / 1000).toFixed(1)}s · you {userIdx}/{TARGET} · {netMode === "local" ? botName : (oppName || "friend")} {botIdx}/{TARGET}
             </div>
+            {netMode === "guest" ? (
+              <div className="w-full py-3 text-white/50 text-sm">waiting for host…</div>
+            ) : netMode === "host" ? (
+              <button
+                type="button"
+                onClick={startFriendMatch}
+                className="w-full py-3 rounded-full bg-white text-black font-medium tracking-tight hover:bg-white/90 active:scale-95 transition cursor-pointer touch-manipulation select-none"
+              >
+                rematch
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={startMatch}
+                className="w-full py-3 rounded-full bg-white text-black font-medium tracking-tight hover:bg-white/90 active:scale-95 transition cursor-pointer touch-manipulation select-none"
+              >
+                rematch
+              </button>
+            )}
             <button
               type="button"
-              onClick={startMatch}
-              className="w-full py-3 rounded-full bg-white text-black font-medium tracking-tight hover:bg-white/90 active:scale-95 transition cursor-pointer touch-manipulation select-none"
-            >
-              rematch
-            </button>
-            <button
-              type="button"
-              onClick={() => setPhase("lobby")}
+              onClick={() => netMode === "local" ? setPhase("lobby") : leaveNet()}
               className="w-full mt-2 py-3 rounded-full text-white/60 hover:text-white transition cursor-pointer touch-manipulation select-none"
             >
-              back
+              {netMode === "local" ? "back" : "leave"}
             </button>
           </div>
         </div>
