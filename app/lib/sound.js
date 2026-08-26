@@ -169,6 +169,127 @@ export function playWin() {
   });
 }
 
+// Chess wood-tap move sound
+export function playChessMove() {
+  if (!alive()) return;
+  const now = ctx.currentTime;
+  const dur = 0.09;
+  const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * dur), ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) {
+    const t = i / d.length;
+    d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 2.5);
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const flt = ctx.createBiquadFilter();
+  flt.type = "bandpass";
+  flt.frequency.value = 600;
+  flt.Q.value = 4;
+  const g = ctx.createGain();
+  g.gain.value = 0.32;
+  src.connect(flt).connect(g).connect(master);
+  src.start(now);
+  // low thud
+  const osc = ctx.createOscillator();
+  const g2 = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(180, now);
+  osc.frequency.exponentialRampToValueAtTime(85, now + 0.06);
+  g2.gain.setValueAtTime(0.22, now);
+  g2.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+  osc.connect(g2).connect(master);
+  osc.start(now);
+  osc.stop(now + 0.1);
+}
+
+// Capture — harsher, two-part
+export function playChessCapture() {
+  if (!alive()) return;
+  const now = ctx.currentTime;
+  const dur = 0.16;
+  const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * dur), ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) {
+    const t = i / d.length;
+    d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 1.6);
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const flt = ctx.createBiquadFilter();
+  flt.type = "bandpass";
+  flt.frequency.value = 350;
+  flt.Q.value = 2.5;
+  const g = ctx.createGain();
+  g.gain.value = 0.38;
+  src.connect(flt).connect(g).connect(master);
+  src.start(now);
+  const osc = ctx.createOscillator();
+  const g2 = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(120, now);
+  osc.frequency.exponentialRampToValueAtTime(55, now + 0.13);
+  g2.gain.setValueAtTime(0.3, now);
+  g2.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+  osc.connect(g2).connect(master);
+  osc.start(now);
+  osc.stop(now + 0.17);
+}
+
+// Check — alert ping
+export function playChessCheck() {
+  if (!alive()) return;
+  const now = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = "triangle";
+  osc.frequency.setValueAtTime(1200, now);
+  osc.frequency.exponentialRampToValueAtTime(1800, now + 0.12);
+  g.gain.setValueAtTime(0, now);
+  g.gain.linearRampToValueAtTime(0.13, now + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+  osc.connect(g).connect(master);
+  osc.start(now);
+  osc.stop(now + 0.22);
+}
+
+// Castle — double tap
+export function playChessCastle() {
+  if (!alive()) return;
+  playChessMove();
+  const c = ctx;
+  setTimeout(() => { if (c) playChessMove(); }, 90);
+}
+
+// Merge pop — pitched to tier (higher tier = brighter)
+export function playMerge(tier) {
+  if (!alive()) return;
+  const now = ctx.currentTime;
+  const base = 300 + tier * 80;
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = "triangle";
+  osc.frequency.setValueAtTime(base * 0.6, now);
+  osc.frequency.exponentialRampToValueAtTime(base, now + 0.05);
+  osc.frequency.exponentialRampToValueAtTime(base * 1.3, now + 0.18);
+  g.gain.setValueAtTime(0, now);
+  g.gain.linearRampToValueAtTime(0.16, now + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+  osc.connect(g).connect(master);
+  osc.start(now);
+  osc.stop(now + 0.24);
+  // sparkle overtone
+  const osc2 = ctx.createOscillator();
+  const g2 = ctx.createGain();
+  osc2.type = "sine";
+  osc2.frequency.setValueAtTime(base * 2, now);
+  g2.gain.setValueAtTime(0.06, now);
+  g2.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+  osc2.connect(g2).connect(master);
+  osc2.start(now);
+  osc2.stop(now + 0.18);
+}
+
 // Correct answer — soft rising ding
 export function playCorrect() {
   if (!alive()) return;
